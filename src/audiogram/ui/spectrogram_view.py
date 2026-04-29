@@ -7,6 +7,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6 import QtCore, QtWidgets
 
+from ..i18n import I18n
 from ..core.models import Spectrogram
 from ..core.notes import midi_to_name
 from ..core.temperament import Temperament
@@ -112,6 +113,7 @@ class SpectrogramView(QtWidgets.QWidget):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
+        self._i18n = I18n()
 
         pg.setConfigOptions(antialias=False, useOpenGL=False)
         self._note_axis = _NoteAxis(orientation="left")
@@ -120,8 +122,8 @@ class SpectrogramView(QtWidgets.QWidget):
             viewBox=self._view_box, axisItems={"left": self._note_axis}
         )
         self._plot = self._plot_widget.getPlotItem()
-        self._plot.setLabel("bottom", "Час", units="с")
-        self._plot.setLabel("left", "Нота")
+        self._plot.setLabel("bottom", "")
+        self._plot.setLabel("left", "")
         self._plot.showGrid(x=True, y=True, alpha=0.18)
         self._plot.setMouseEnabled(x=True, y=True)
 
@@ -186,10 +188,7 @@ class SpectrogramView(QtWidgets.QWidget):
         self._plot.addItem(self._cursor_note, ignoreBounds=True)
         self._cursor_note.setVisible(False)
 
-        self._zoom_hint = QtWidgets.QLabel(
-            "Клік — курсор · ⇧ + клік — виділення · скрол 2 пальцями — пан"
-            " · пінч — зум · ⌘/⇧ + скрол — зум X/Y · права кнопка — обласний зум"
-        )
+        self._zoom_hint = QtWidgets.QLabel()
         self._zoom_hint.setStyleSheet(
             "color: #6f7a6a; padding: 4px 10px; background: #101512; font-size: 11px;"
         )
@@ -214,6 +213,7 @@ class SpectrogramView(QtWidgets.QWidget):
             scene.sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved
         )
         scene.sigMouseClicked.connect(self._on_mouse_clicked)
+        self.retranslate_ui()
 
     # ----------------------------------------------------------------- public
     def show_spectrogram(self, spec: Spectrogram, *, preserve_view: bool = False) -> None:
@@ -297,6 +297,19 @@ class SpectrogramView(QtWidgets.QWidget):
         bounded = max(0.0, min(seconds, self._duration))
         self._cue_marker.setPos(bounded)
         self._cue_marker.setVisible(True)
+
+    def set_i18n(self, i18n: I18n) -> None:
+        self._i18n = i18n
+        self.retranslate_ui()
+
+    def retranslate_ui(self) -> None:
+        self._plot.setLabel(
+            "bottom",
+            self._tr("ui.spectrogram.axis.time"),
+            units=self._tr("ui.unit.seconds_short"),
+        )
+        self._plot.setLabel("left", self._tr("ui.spectrogram.axis.note"))
+        self._zoom_hint.setText(self._tr("ui.spectrogram.zoom_hint"))
 
     def set_playback_active(self, active: bool) -> None:
         self._playback_active = bool(active)
@@ -448,9 +461,12 @@ class SpectrogramView(QtWidgets.QWidget):
         anchor_view = view_box.mapSceneToView(anchor_scene)
         self._cursor_note.setPos(anchor_view.x(), anchor_view.y())
         self._cursor_note.setText(
-            f"{note_label}   {frequency:.1f} Гц"
+            f"{note_label}   {frequency:.1f} {self._tr('ui.unit.hz_short')}"
         )
         self._cursor_note.setVisible(True)
+
+    def _tr(self, key: str, **params: object) -> str:
+        return self._i18n.t(key, **params)
 
     @staticmethod
     def _magma_lut() -> np.ndarray:

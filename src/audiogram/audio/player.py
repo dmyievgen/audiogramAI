@@ -22,6 +22,7 @@ class AudioPlayer:
         self._frame_index = 0
         self._lock = threading.Lock()
         self._loop_enabled = False
+        self._play_region_enabled = False
         self._loop_start_frame = 0
         self._loop_end_frame = 0
         self._playback_rate = 1.0
@@ -30,6 +31,10 @@ class AudioPlayer:
     def set_loop_enabled(self, enabled: bool) -> None:
         with self._lock:
             self._loop_enabled = bool(enabled)
+
+    def set_play_region_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self._play_region_enabled = bool(enabled)
 
     def set_loop_region(self, start_seconds: Optional[float], end_seconds: Optional[float]) -> None:
         with self._lock:
@@ -55,6 +60,7 @@ class AudioPlayer:
         with self._lock:
             self._track = track
             self._frame_index = 0
+            self._play_region_enabled = False
             self._loop_start_frame = 0
             self._loop_end_frame = 0
 
@@ -146,19 +152,23 @@ class AudioPlayer:
 
             samples = track.samples
             total = samples.shape[0]
+            bounded_region = self._loop_end_frame > self._loop_start_frame
             loop = (
                 self._loop_enabled
-                and self._loop_end_frame > self._loop_start_frame
+                and bounded_region
             )
+            play_region = self._play_region_enabled and bounded_region
 
             idx = self._frame_index
-            if loop and (idx < self._loop_start_frame or idx >= self._loop_end_frame):
+            if (loop or play_region) and (
+                idx < self._loop_start_frame or idx >= self._loop_end_frame
+            ):
                 idx = self._loop_start_frame
 
             written = 0
             stop_after = False
             while written < frames:
-                end_limit = self._loop_end_frame if loop else total
+                end_limit = self._loop_end_frame if (loop or play_region) else total
                 available = end_limit - idx
                 if available <= 0:
                     if loop:
