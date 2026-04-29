@@ -106,6 +106,7 @@ class SpectrogramView(QtWidgets.QWidget):
     """
 
     seek_requested = QtCore.pyqtSignal(float)
+    playback_seek_requested = QtCore.pyqtSignal(float)
     selection_changed = QtCore.pyqtSignal(float, float)
     selection_cleared = QtCore.pyqtSignal()
 
@@ -134,6 +135,14 @@ class SpectrogramView(QtWidgets.QWidget):
         self._plot.addItem(self._playhead)
         self._playhead.setVisible(False)
 
+        self._cue_marker = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen("#4dc7ff", width=2, style=QtCore.Qt.PenStyle.DashLine),
+        )
+        self._plot.addItem(self._cue_marker)
+        self._cue_marker.setVisible(False)
+
         self._selection_region = pg.LinearRegionItem(
             values=(0.0, 0.0),
             orientation="vertical",
@@ -149,6 +158,8 @@ class SpectrogramView(QtWidgets.QWidget):
         self._has_selection = False
         self._suppress_region_signal = False
         self._cursor_seconds = 0.0
+        self._selection_anchor_seconds = 0.0
+        self._playback_active = False
 
         crosshair_pen = pg.mkPen("#9aa", width=1, style=QtCore.Qt.PenStyle.DashLine)
         self._hover_v = pg.InfiniteLine(angle=90, pen=crosshair_pen)
@@ -258,12 +269,16 @@ class SpectrogramView(QtWidgets.QWidget):
 
         self._playhead.setPos(0.0)
         self._playhead.setVisible(True)
+        self._cue_marker.setPos(0.0)
+        self._cue_marker.setVisible(True)
         self._cursor_seconds = 0.0
+        self._selection_anchor_seconds = 0.0
         self.clear_selection()
 
     def clear(self) -> None:
         self._image.clear()
         self._playhead.setVisible(False)
+        self._cue_marker.setVisible(False)
         self._hover_v.setVisible(False)
         self._hover_h.setVisible(False)
         self._cursor_note.setVisible(False)
@@ -275,7 +290,17 @@ class SpectrogramView(QtWidgets.QWidget):
             return
         bounded = max(0.0, min(seconds, self._duration))
         self._playhead.setPos(bounded)
-        self._cursor_seconds = bounded
+
+    def update_cue_marker(self, seconds: float) -> None:
+        if self._duration <= 0.0:
+            return
+        bounded = max(0.0, min(seconds, self._duration))
+        self._cue_marker.setPos(bounded)
+        self._cue_marker.setVisible(True)
+
+    def set_playback_active(self, active: bool) -> None:
+        self._playback_active = bool(active)
+        self._selection_region.setMovable(not self._playback_active)
 
     # ------------------------------------------------------------------- zoom
     def zoom(self, factor: float, axis: str = "both") -> None:
@@ -352,8 +377,19 @@ class SpectrogramView(QtWidgets.QWidget):
         if not (0.0 <= seconds <= self._duration):
             return
 
+        if self._playback_active:
+            if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                return
+            selection = self.selection_range()
+            if selection is not None:
+                start, end = selection
+                if not (start <= seconds <= end):
+                    return
+            self.playback_seek_requested.emit(seconds)
+            return
+
         if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
-            anchor = self._cursor_seconds
+            anchor = self._selection_anchor_seconds
             lo, hi = (anchor, seconds) if anchor <= seconds else (seconds, anchor)
             if hi - lo < 1e-4:
                 return
@@ -365,6 +401,7 @@ class SpectrogramView(QtWidgets.QWidget):
             return
 
         self._cursor_seconds = seconds
+        self._selection_anchor_seconds = seconds
         self.clear_selection()
         self.seek_requested.emit(seconds)
 

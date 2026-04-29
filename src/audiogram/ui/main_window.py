@@ -16,6 +16,12 @@ from .spectrogram_view import SpectrogramView
 
 class MainWindow(QtWidgets.QMainWindow):
     PLAYHEAD_INTERVAL_MS = 30
+    DEFAULT_SHARPNESS = 50
+    DEFAULT_SPEED_PERCENT = 100
+    DEFAULT_LABEL_TRANSPOSE = 0.0
+    DEFAULT_AUDIO_TRANSPOSE = 0.0
+    DEFAULT_TEMPERAMENT_INDEX = 0
+    DEFAULT_TONIC_FREQ = 440.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -37,6 +43,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_action = QtGui.QAction("Stop", self)
         self._stop_action.setEnabled(False)
         self._stop_action.triggered.connect(self._on_stop)
+
+        self._reset_action = QtGui.QAction("Reset", self)
+        self._reset_action.setEnabled(False)
+        self._reset_action.triggered.connect(self._on_reset)
 
         self._fit_action = QtGui.QAction("Fit", self)
         self._fit_action.setShortcut(QtGui.QKeySequence("Ctrl+0"))
@@ -153,6 +163,7 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self._play_action)
         toolbar.addAction(self._stop_action)
+        toolbar.addAction(self._reset_action)
         toolbar.addSeparator()
         toolbar.addAction(self._fit_action)
         toolbar.addSeparator()
@@ -189,6 +200,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._spectrogram_view = SpectrogramView()
         self._spectrogram_view.seek_requested.connect(self._on_seek)
+        self._spectrogram_view.playback_seek_requested.connect(
+            self._on_playback_seek
+        )
         self._spectrogram_view.selection_changed.connect(self._on_selection_changed)
         self._spectrogram_view.selection_cleared.connect(self._on_selection_cleared)
         # Apply initial temperament + tonic-combo visibility.
@@ -216,6 +230,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_track: Optional[AudioTrack] = None
         self._current_spec: Optional[Spectrogram] = None
         self._suppressed_spec: Optional[Spectrogram] = None
+        self._cue_seconds: float = 0.0
         # Cached playback rate the player buffer was built at — used to
         # convert the player's processed-timeline position back to the
         # original timeline when the rate changes.
@@ -255,22 +270,39 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._player.is_playing:
             self._player.pause()
             self._playhead_timer.stop()
+            self._player.seek(self._cue_seconds / self._speed_rate())
+            self._spectrogram_view.update_playhead(self._cue_seconds)
+            self._spectrogram_view.set_playback_active(False)
             self._play_action.setText("Play")
         else:
             self._player.play()
             if self._player.is_playing:
                 self._playhead_timer.start()
+                self._spectrogram_view.set_playback_active(True)
                 self._play_action.setText("Pause")
 
     def _on_stop(self) -> None:
         self._player.stop()
         self._playhead_timer.stop()
+        self._player.seek(self._cue_seconds / self._speed_rate())
         self._play_action.setText("Play")
-        self._spectrogram_view.update_playhead(0.0)
+        self._spectrogram_view.set_playback_active(False)
+        self._spectrogram_view.update_playhead(self._cue_seconds)
+        self._spectrogram_view.update_cue_marker(self._cue_seconds)
+
+    def _on_reset(self) -> None:
+        self._reset_current_track_state(status_message="Скинуто до початкового стану")
 
     def _on_seek(self, seconds: float) -> None:
         # ``seconds`` lives on the ORIGINAL timeline (spectrogram never warps).
         # Convert to playback (processed) timeline before seeking.
+        self._cue_seconds = seconds
+        self._player.seek(seconds / self._speed_rate())
+        self._spectrogram_view.update_cue_marker(seconds)
+        self._spectrogram_view.update_playhead(seconds)
+
+    def _on_playback_seek(self, seconds: float) -> None:
+        # Temporary seek while playing: move only the live playhead.
         self._player.seek(seconds / self._speed_rate())
         self._spectrogram_view.update_playhead(seconds)
 
@@ -297,6 +329,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._spectrogram_view.update_playhead(position)
         if not self._player.is_playing:
             self._playhead_timer.stop()
+            self._spectrogram_view.set_playback_active(False)
             self._play_action.setText("Play")
 
     def _on_speed_changed(self, percent: int) -> None:
@@ -418,6 +451,53 @@ class MainWindow(QtWidgets.QMainWindow):
             self._suppressed_spec, preserve_view=True
         )
 
+    def _reset_current_track_state(self, *, status_message: str | None = None) -> None:
+        self._sharpness_timer.stop()
+        self._audio_transpose_timer.stop()
+
+        with QtCore.QSignalBlocker(self._suppress_harmonics_cb):
+            self._suppress_harmonics_cb.setChecked(False)
+        with QtCore.QSignalBlocker(self._sharpness_slider):
+            self._sharpness_slider.setValue(self.DEFAULT_SHARPNESS)
+        with QtCore.QSignalBlocker(self._speed_spin):
+            self._speed_spin.setValue(self.DEFAULT_SPEED_PERCENT)
+        with QtCore.QSignalBlocker(self._transpose_indicator):
+            self._transpose_indicator.setValue(self.DEFAULT_LABEL_TRANSPOSE)
+        with QtCore.QSignalBlocker(self._audio_transpose):
+            self._audio_transpose.setValue(self.DEFAULT_AUDIO_TRANSPOSE)
+        with QtCore.QSignalBlocker(self._temperament_combo):
+            self._temperament_combo.setCurrentIndex(self.DEFAULT_TEMPERAMENT_INDEX)
+        with QtCore.QSignalBlocker(self._tonic_freq):
+            self._tonic_freq.setValue(self.DEFAULT_TONIC_FREQ)
+
+        self._sharpness_slider.setEnabled(False)
+        self._sharpness_label.setEnabled(False)
+
+        self._spectrogram_view.set_label_transpose(self.DEFAULT_LABEL_TRANSPOSE)
+        self._on_temperament_changed()
+
+        self._cue_seconds = 0.0
+        self._player.stop()
+        self._playhead_timer.stop()
+        self._spectrogram_view.set_playback_active(False)
+        self._play_action.setText("Play")
+
+        if self._current_track is not None:
+            self._player.load(self._current_track)
+        self._previous_rate = 1.0
+        self._suppressed_spec = None
+
+        if self._current_spec is not None:
+            self._spectrogram_view.show_spectrogram(self._current_spec)
+            self._spectrogram_view.fit_view()
+            self._spectrogram_view.clear_selection()
+            self._spectrogram_view.update_playhead(0.0)
+            self._spectrogram_view.update_cue_marker(0.0)
+
+        self._clear_selection_action.setEnabled(False)
+        if status_message is not None:
+            self.statusBar().showMessage(status_message)
+
     # ----------------------------------------------------------------- loader
     def _load_path(self, path: Path) -> None:
         self.statusBar().showMessage(f"Завантажую {path.name}…")
@@ -440,28 +520,17 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _install_track(self, track: AudioTrack, spectrogram: Spectrogram, *, label: str) -> None:
-        self._player.stop()
-        self._playhead_timer.stop()
-        self._player.load(track)
-        self._previous_rate = 1.0
-
         self._current_track = track
         self._current_spec = spectrogram
         self._suppressed_spec = None
 
-        if self._suppress_harmonics_cb.isChecked():
-            self._recompute_suppressed()
-        else:
-            self._spectrogram_view.show_spectrogram(spectrogram)
+        self._reset_current_track_state()
 
         self._stack.setCurrentWidget(self._spectrogram_view)
         self._play_action.setEnabled(True)
         self._stop_action.setEnabled(True)
+        self._reset_action.setEnabled(True)
         self._fit_action.setEnabled(True)
         self._clear_selection_action.setEnabled(False)
         self._play_action.setText("Play")
         self.statusBar().showMessage(label)
-
-        # Re-apply audio transpose / time-stretch against the new source.
-        if abs(self._audio_transpose.value()) > 1e-3 or abs(self._speed_rate() - 1.0) > 1e-3:
-            self._apply_audio_transpose()

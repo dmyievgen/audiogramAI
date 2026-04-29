@@ -18,7 +18,7 @@ cd audiogram
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python audiogram/__main__.py
+python ./__main__.py
 ```
 
 (Викликати з кореня репозиторію або з папки `audiogram/` — обидва варіанти працюють завдяки `sys.path` тюнінгу в `__main__.py`.)
