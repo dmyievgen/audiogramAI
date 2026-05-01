@@ -13,27 +13,39 @@ from ..core.notes import midi_to_name
 from ..core.temperament import Temperament
 
 
-class _NoteAxis(pg.AxisItem):
-    """Y-axis whose values are MIDI numbers but rendered as note names.
+class _FrequencyAxis(pg.AxisItem):
+    """Y-axis whose values are MIDI numbers but rendered as frequencies.
 
-    pyqtgraph picks the tick density on its own based on the zoom level —
-    we just translate numeric ticks that happen to fall on whole semitones
-    into ``C4`` / ``F#3`` style labels.
+    The spectrogram remains logarithmic internally, so the labels convert the
+    MIDI-like Y coordinate back to Hz without implying a fixed note name.
     """
 
     def tickStrings(self, values, scale, spacing):  # noqa: N802 (pyqtgraph API)
         labels: list[str] = []
         for value in values:
-            nearest = round(float(value))
-            if abs(value - nearest) < 0.05 and 0 <= nearest <= 127:
-                labels.append(midi_to_name(int(nearest)))
+            midi = float(value)
+            if 0.0 <= midi <= 127.0:
+                frequency = 440.0 * math.pow(2.0, (midi - 69.0) / 12.0)
+                labels.append(self._format_frequency(frequency))
             else:
                 labels.append("")
         return labels
 
     def tickSpacing(self, minVal, maxVal, size):  # noqa: N802 (pyqtgraph API)
-        # Force a semitone-aligned grid: major every octave, minor every semitone.
-        return [(12.0, 0.0), (1.0, 0.0)]
+        span = max(1.0, float(maxVal) - float(minVal))
+        if span > 72.0:
+            return [(24.0, 0.0), (12.0, 0.0)]
+        if span > 36.0:
+            return [(12.0, 0.0), (6.0, 0.0)]
+        if span > 12.0:
+            return [(6.0, 0.0), (1.0, 0.0)]
+        return [(1.0, 0.0), (0.5, 0.0)]
+
+    @staticmethod
+    def _format_frequency(frequency: float) -> str:
+        if frequency < 100.0:
+            return f"{frequency:.1f}"
+        return f"{frequency:.0f}"
 
 
 class _NavViewBox(pg.ViewBox):
@@ -116,10 +128,10 @@ class SpectrogramView(QtWidgets.QWidget):
         self._i18n = I18n()
 
         pg.setConfigOptions(antialias=False, useOpenGL=False)
-        self._note_axis = _NoteAxis(orientation="left")
+        self._frequency_axis = _FrequencyAxis(orientation="left")
         self._view_box = _NavViewBox()
         self._plot_widget = _GesturePlotWidget(
-            viewBox=self._view_box, axisItems={"left": self._note_axis}
+            viewBox=self._view_box, axisItems={"left": self._frequency_axis}
         )
         self._plot = self._plot_widget.getPlotItem()
         self._plot.setLabel("bottom", "")
@@ -148,15 +160,42 @@ class SpectrogramView(QtWidgets.QWidget):
         self._selection_region = pg.LinearRegionItem(
             values=(0.0, 0.0),
             orientation="vertical",
-            brush=pg.mkBrush(215, 255, 100, 50),
-            pen=pg.mkPen("#d7ff64", width=1),
-            hoverBrush=pg.mkBrush(215, 255, 100, 80),
+            brush=pg.mkBrush(0, 0, 0, 0),
+            pen=pg.mkPen("#d7ff64", width=3),
+            hoverPen=pg.mkPen("#ffffff", width=4),
+            hoverBrush=pg.mkBrush(0, 0, 0, 0),
             movable=True,
         )
         self._selection_region.setZValue(20)
         self._plot.addItem(self._selection_region, ignoreBounds=True)
         self._selection_region.setVisible(False)
         self._selection_region.sigRegionChanged.connect(self._on_region_user_change)
+
+        self._selection_axis_marker = pg.LinearRegionItem(
+            values=(0.0, 0.0),
+            orientation="vertical",
+            brush=pg.mkBrush(215, 255, 100, 96),
+            pen=pg.mkPen("#d7ff64", width=3),
+            hoverBrush=pg.mkBrush(215, 255, 100, 96),
+            movable=False,
+            span=(0.0, 0.022),
+        )
+        self._selection_axis_marker.setZValue(19)
+        self._plot.addItem(self._selection_axis_marker, ignoreBounds=True)
+        self._selection_axis_marker.setVisible(False)
+
+        self._selection_top_marker = pg.LinearRegionItem(
+            values=(0.0, 0.0),
+            orientation="vertical",
+            brush=pg.mkBrush(215, 255, 100, 96),
+            pen=pg.mkPen("#d7ff64", width=3),
+            hoverBrush=pg.mkBrush(215, 255, 100, 96),
+            movable=False,
+            span=(0.978, 1.0),
+        )
+        self._selection_top_marker.setZValue(19)
+        self._plot.addItem(self._selection_top_marker, ignoreBounds=True)
+        self._selection_top_marker.setVisible(False)
         self._has_selection = False
         self._suppress_region_signal = False
         self._cursor_seconds = 0.0
@@ -266,6 +305,8 @@ class SpectrogramView(QtWidgets.QWidget):
         self._plot.setYRange(self._y_start, self._y_end, padding=0)
 
         self._selection_region.setBounds([0.0, self._duration])
+        self._selection_axis_marker.setBounds([0.0, self._duration])
+        self._selection_top_marker.setBounds([0.0, self._duration])
 
         self._playhead.setPos(0.0)
         self._playhead.setVisible(True)
@@ -308,7 +349,11 @@ class SpectrogramView(QtWidgets.QWidget):
             self._tr("ui.spectrogram.axis.time"),
             units=self._tr("ui.unit.seconds_short"),
         )
-        self._plot.setLabel("left", self._tr("ui.spectrogram.axis.note"))
+        self._plot.setLabel(
+            "left",
+            self._tr("ui.spectrogram.axis.frequency"),
+            units=self._tr("ui.unit.hz_short"),
+        )
         self._zoom_hint.setText(self._tr("ui.spectrogram.zoom_hint"))
 
     def set_playback_active(self, active: bool) -> None:
@@ -357,15 +402,21 @@ class SpectrogramView(QtWidgets.QWidget):
     def clear_selection(self) -> None:
         if not self._has_selection:
             self._selection_region.setVisible(False)
+            self._selection_axis_marker.setVisible(False)
+            self._selection_top_marker.setVisible(False)
             return
         self._has_selection = False
         self._selection_region.setVisible(False)
+        self._selection_axis_marker.setVisible(False)
+        self._selection_top_marker.setVisible(False)
         self.selection_cleared.emit()
 
     def _set_region_silently(self, lo: float, hi: float) -> None:
         self._suppress_region_signal = True
         try:
             self._selection_region.setRegion((lo, hi))
+            self._selection_axis_marker.setRegion((lo, hi))
+            self._selection_top_marker.setRegion((lo, hi))
         finally:
             self._suppress_region_signal = False
 
@@ -377,6 +428,8 @@ class SpectrogramView(QtWidgets.QWidget):
         hi = float(max(0.0, min(self._duration, hi)))
         if hi - lo < 1e-4:
             return
+        self._selection_axis_marker.setRegion((lo, hi))
+        self._selection_top_marker.setRegion((lo, hi))
         self.selection_changed.emit(lo, hi)
 
     # ---------------------------------------------------------------- helpers
@@ -409,6 +462,8 @@ class SpectrogramView(QtWidgets.QWidget):
             event.accept()
             self._set_region_silently(lo, hi)
             self._selection_region.setVisible(True)
+            self._selection_axis_marker.setVisible(True)
+            self._selection_top_marker.setVisible(True)
             self._has_selection = True
             self.selection_changed.emit(lo, hi)
             return

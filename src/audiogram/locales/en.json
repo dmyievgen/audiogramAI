@@ -47,6 +47,7 @@
   "ui.dialog.open_failed_title": "Could not open file",
   "ui.spectrogram.axis.time": "Time",
   "ui.spectrogram.axis.note": "Note",
+  "ui.spectrogram.axis.frequency": "Frequency",
   "ui.spectrogram.zoom_hint": "Click: cue cursor · Shift+Click: selection · two-finger scroll: pan · pinch: zoom · Cmd/Shift+scroll: zoom X/Y · right mouse: box zoom",
   "ui.unit.percent_suffix": " %",
   "ui.unit.hz_suffix": " Hz",

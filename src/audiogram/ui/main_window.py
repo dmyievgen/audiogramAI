@@ -249,6 +249,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._playhead_timer.setInterval(self.PLAYHEAD_INTERVAL_MS)
         self._playhead_timer.timeout.connect(self._tick)
 
+        self._audio_device_timer = QtCore.QTimer(self)
+        self._audio_device_timer.setInterval(1000)
+        self._audio_device_timer.timeout.connect(self._refresh_audio_output_device)
+        self._audio_device_timer.start()
+
         self._current_track: Optional[AudioTrack] = None
         self._current_spec: Optional[Spectrogram] = None
         self._suppressed_spec: Optional[Spectrogram] = None
@@ -409,6 +414,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self._player.set_play_region_enabled(False)
             self._spectrogram_view.set_playback_active(False)
             self._play_action.setText(self._tr("ui.action.play"))
+
+    def _refresh_audio_output_device(self) -> None:
+        was_playing = self._player.is_playing
+        try:
+            changed = self._player.refresh_output_device()
+        except Exception:
+            if was_playing:
+                self._playhead_timer.stop()
+                self._spectrogram_view.set_playback_active(False)
+                self._play_action.setText(self._tr("ui.action.play"))
+            return
+        if changed and was_playing and self._player.is_playing:
+            self._playhead_timer.start()
+            self._spectrogram_view.set_playback_active(True)
+            self._play_action.setText(self._tr("ui.action.pause"))
 
     def _on_speed_changed(self, percent: int) -> None:
         # Real time-stretch: schedule a rebuild of the playback buffer.

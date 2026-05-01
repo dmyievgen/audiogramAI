@@ -7,7 +7,7 @@ position with a ``QTimer`` so this module stays Qt-free.
 from __future__ import annotations
 
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -26,6 +26,8 @@ class AudioPlayer:
         self._loop_start_frame = 0
         self._loop_end_frame = 0
         self._playback_rate = 1.0
+        self._output_device_index: Optional[int] = None
+        self._output_device_signature: Optional[tuple[Any, ...]] = None
 
     # ------------------------------------------------------------------- loop
     def set_loop_enabled(self, enabled: bool) -> None:
@@ -71,7 +73,10 @@ class AudioPlayer:
     # ------------------------------------------------------------------ state
     @property
     def is_playing(self) -> bool:
-        return self._stream is not None and self._stream.active
+        try:
+            return self._stream is not None and self._stream.active
+        except Exception:
+            return False
 
     def position_seconds(self) -> float:
         with self._lock:
@@ -84,12 +89,16 @@ class AudioPlayer:
         if self._track is None or self.is_playing:
             return
 
-        self._stream = sd.OutputStream(
-            samplerate=self._effective_samplerate(),
-            channels=1,
-            dtype="float32",
-            callback=self._callback,
-        )
+        self._refresh_default_output()
+        stream_kwargs: dict[str, object] = {
+            "samplerate": self._effective_samplerate(),
+            "channels": 1,
+            "dtype": "float32",
+            "callback": self._callback,
+        }
+        if self._output_device_index is not None:
+            stream_kwargs["device"] = self._output_device_index
+        self._stream = sd.OutputStream(**stream_kwargs)
         self._stream.start()
 
     def set_playback_rate(self, rate: float) -> None:
@@ -133,15 +142,76 @@ class AudioPlayer:
             target = int(max(0.0, seconds) * self._track.sample_rate)
             self._frame_index = min(target, total)
 
+    def refresh_output_device(self) -> bool:
+        """Switch playback to the current system default output if it changed."""
+        if not self._refresh_default_output():
+            return False
+
+        if self._stream is not None:
+            self._teardown_stream()
+            self.play()
+        return True
+
     # --------------------------------------------------------------- internal
+    def _refresh_default_output(self) -> bool:
+        index = self._current_default_output_index()
+        signature = self._device_signature(index)
+        if signature == self._output_device_signature:
+            return False
+        self._output_device_index = index
+        self._output_device_signature = signature
+        return True
+
+    def _current_default_output_index(self) -> Optional[int]:
+        try:
+            device = sd.default.device
+            if len(device) >= 2 and isinstance(device[1], int) and device[1] >= 0:
+                return int(device[1])
+        except Exception:
+            pass
+
+        try:
+            hostapi = int(sd.default.hostapi)
+            hostapis = sd.query_hostapis()
+            if 0 <= hostapi < len(hostapis):
+                index = int(hostapis[hostapi].get("default_output_device", -1))
+                if index >= 0:
+                    return index
+            for api in hostapis:
+                index = int(api.get("default_output_device", -1))
+                if index >= 0:
+                    return index
+        except Exception:
+            pass
+
+        return None
+
+    def _device_signature(self, index: Optional[int]) -> Optional[tuple[Any, ...]]:
+        if index is None:
+            return None
+        try:
+            info = sd.query_devices(index)
+        except Exception:
+            return (index,)
+        return (
+            index,
+            info.get("name"),
+            info.get("hostapi"),
+            info.get("max_output_channels"),
+        )
+
     def _teardown_stream(self) -> None:
         stream = self._stream
         self._stream = None
         if stream is not None:
             try:
                 stream.stop()
-            finally:
+            except Exception:
+                pass
+            try:
                 stream.close()
+            except Exception:
+                pass
 
     def _callback(self, outdata, frames, _time, _status) -> None:  # pragma: no cover
         with self._lock:

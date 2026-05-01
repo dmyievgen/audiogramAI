@@ -47,6 +47,7 @@
   "ui.dialog.open_failed_title": "Не вдалося відкрити файл",
   "ui.spectrogram.axis.time": "Час",
   "ui.spectrogram.axis.note": "Нота",
+  "ui.spectrogram.axis.frequency": "Частота",
   "ui.spectrogram.zoom_hint": "Клік: курсор · Shift+Клік: виділення · скрол двома пальцями: пан · пінч: зум · Cmd/Shift+скрол: зум X/Y · права кнопка: обласний зум",
   "ui.unit.percent_suffix": " %",
   "ui.unit.hz_suffix": " Гц",
